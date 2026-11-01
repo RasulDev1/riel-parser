@@ -3,16 +3,21 @@
 Работает на ПК риелтора через его домашний интернет. Следит за ссылками поиска Авито,
 находит новые объявления, отсеивает агентов и дубли, присылает новое в Telegram.
 
-## Быстрый старт
+## Быстрый старт (Windows)
+
+Нужен только Python 3.10+ (при установке отметьте «Add python.exe to PATH»).
+Библиотеки `httpx` и `curl_cffi` программа ставит сама при первом запуске,
+а если нет `config.json`, копирует его из `config.example.json`.
+
+- `test.bat`: пробный прогон, один проход без отправки в Telegram, подробный лог.
+- `start.bat`: рабочий режим.
+
+Или из PowerShell / командной строки в папке `cli`:
 
 ```bash
-cd cli
-python -m pip install -r requirements.txt
-copy config.example.json config.json   # Linux/macOS: cp config.example.json config.json
-# заполните config.json
-python main.py --test-telegram   # проверить бота
-python main.py --once --dry-run  # один проход, без отправки в Telegram
-python main.py                   # рабочий режим
+python main.py --once --dry-run -v  # пробный прогон
+python main.py --test-telegram      # проверить бота
+python main.py                      # рабочий режим
 ```
 
 Сборка `.exe` под Windows: запустите `build_exe.bat`. Получите `dist\AvitoParser.exe`

@@ -26,9 +26,37 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
 
-from avito_client import AvitoBlocked, AvitoClient, Listing, SellerInfo, normalize_search_url
+def ensure_dependencies() -> None:
+    """
+    При первом запуске сам ставит недостающие библиотеки через pip.
+    В собранном .exe всё уже внутри, там ничего не делаем.
+    """
+    if getattr(sys, "frozen", False):
+        return
+    import importlib.util
+    import subprocess
+
+    required = {"httpx": "httpx>=0.27", "curl_cffi": "curl_cffi>=0.7"}
+    missing = [pkg for module, pkg in required.items() if importlib.util.find_spec(module) is None]
+    if not missing:
+        return
+    print(f"Устанавливаю недостающие библиотеки: {', '.join(missing)} ...", flush=True)
+    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *missing]
+    if subprocess.call(cmd) != 0:
+        # без прав администратора пробуем поставить в профиль пользователя
+        if subprocess.call(cmd + ["--user"]) != 0:
+            print("Не удалось установить библиотеки. Выполните вручную:\n  " + " ".join(cmd))
+            raise SystemExit(1)
+    importlib.invalidate_caches()
+    print("Библиотеки установлены.\n", flush=True)
+
+
+ensure_dependencies()
+
+import httpx  # noqa: E402
+
+from avito_client import AvitoBlocked, AvitoClient, Listing, SellerInfo, normalize_search_url  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Пути: рядом со скриптом или рядом с .exe (PyInstaller)
@@ -96,6 +124,12 @@ class Config:
 
 def load_config() -> Config:
     if not CONFIG_PATH.exists():
+        example = BASE_DIR / "config.example.json"
+        if example.exists():
+            CONFIG_PATH.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+            log.warning("config.json не найден, скопировал config.example.json. Для проверки этого хватит, "
+                        "для работы впишите токен бота, chat id и свои ссылки: %s", CONFIG_PATH)
+            return load_config()
         CONFIG_PATH.write_text(json.dumps(CONFIG_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
         log.error("Файл config.json не найден. Создал шаблон: %s. Заполните его и запустите снова.", CONFIG_PATH)
         raise SystemExit(1)
