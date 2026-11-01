@@ -108,9 +108,16 @@ _BLOCK_MARKERS = re.compile(
 )
 
 
+# 429 — слишком много запросов, 439/403 — Авито так отвечает на подозрение в боте
+BLOCK_STATUSES = {401, 403, 429, 439}
+
+
 class AvitoClient:
-    def __init__(self, timeout: float = 25.0):
+    def __init__(self, timeout: float = 25.0, cookies: str = ""):
         self._timeout = timeout
+        # Куки из своего браузера (строка заголовка Cookie). Помогают, если Авито
+        # уже показал капчу: проходите её в браузере и вставляете куки в config.json
+        self._cookies = cookies.strip()
         if HAS_CURL_CFFI:
             # impersonate="chrome" — TLS/HTTP2-отпечаток актуального Chrome
             self._session = AsyncSession(impersonate="chrome", timeout=timeout)
@@ -138,13 +145,15 @@ class AvitoClient:
         }
         if referer:
             headers["Referer"] = referer
+        if self._cookies:
+            headers["Cookie"] = self._cookies
         if HAS_CURL_CFFI:
             resp = await self._session.get(url, headers=headers, allow_redirects=True)
         else:
             resp = await self._session.get(url, headers=headers)
         status = resp.status_code
         text = resp.text
-        if status in (403, 429) or (status == 200 and _BLOCK_MARKERS.search(text[:20000]) and "data-marker=\"item\"" not in text):
+        if status in BLOCK_STATUSES or (400 <= status < 500 and _BLOCK_MARKERS.search(text[:20000])) or (status == 200 and _BLOCK_MARKERS.search(text[:20000]) and "data-marker=\"item\"" not in text):
             raise AvitoBlocked(f"HTTP {status}")
         if status >= 400:
             raise RuntimeError(f"Авито ответил HTTP {status} на {url}")

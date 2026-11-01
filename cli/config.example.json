@@ -4,6 +4,7 @@
   "global_check_interval_seconds": 60,
   "jitter_seconds": 3,
   "notify_on_first_run": false,
+  "avito_cookies": "",
   "anti_agent": {
     "enabled": true,
     "max_active_listings": 1,

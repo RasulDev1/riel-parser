@@ -75,6 +75,7 @@ CONFIG_TEMPLATE = {
     "global_check_interval_seconds": 60,
     "jitter_seconds": 3,
     "notify_on_first_run": False,
+    "avito_cookies": "",
     "anti_agent": {
         "enabled": True,
         "max_active_listings": 1,
@@ -119,6 +120,7 @@ class Config:
     jitter: float
     notify_on_first_run: bool
     anti_agent: AntiAgent
+    avito_cookies: str = ""
     targets: list[Target] = field(default_factory=list)
 
 
@@ -167,6 +169,7 @@ def load_config() -> Config:
             skip_if_unknown=bool(aa.get("skip_if_unknown", False)),
         ),
         targets=targets,
+        avito_cookies=str(raw.get("avito_cookies") or ""),
     )
 
 
@@ -323,7 +326,8 @@ class Monitor:
     def __init__(self, cfg: Config, dry_run: bool = False):
         self.cfg = cfg
         self.history = History(DB_PATH)
-        self.avito = AvitoClient()
+        self.avito = AvitoClient(cookies=cfg.avito_cookies)
+        self.once = False
         self.tg = Telegram(cfg.token, cfg.chat_id, dry_run=dry_run)
         self.dry_run = dry_run
         self.block_streak = 0
@@ -419,7 +423,16 @@ class Monitor:
             except AvitoBlocked as e:
                 self.block_streak += 1
                 pause = min(60 * 2 ** (self.block_streak - 1), 30 * 60)
-                log.error("⛔ Авито ограничил доступ (%s). Пауза %s мин.", e, pause // 60)
+                log.error(
+                    "⛔ Авито ограничил доступ (%s). Это защита от частых запросов с вашего IP.\n"
+                    "   Что сделать: откройте avito.ru в браузере на этом ПК и, если есть капча, пройдите её.\n"
+                    "   Если не поможет, скопируйте куки браузера в поле avito_cookies в config.json (см. README).",
+                    e,
+                )
+                if self.once:
+                    log.info("   Режим --once: пропускаю остальные ссылки.")
+                    return
+                log.info("   Пауза %s мин, потом продолжу сам.", pause // 60)
                 if self.block_streak == 1:
                     await self.tg.send(
                         "⛔ Авито временно ограничил доступ с этого компьютера. "
@@ -477,6 +490,7 @@ async def amain(args: argparse.Namespace) -> None:
             ok = await monitor.tg.send("✅ Парсер Авито подключён. Уведомления будут приходить сюда.")
             log.info("Тестовое сообщение %s", "отправлено" if ok else "НЕ отправлено")
         elif args.once:
+            monitor.once = True
             await monitor.run_once()
         else:
             await monitor.run_forever()
