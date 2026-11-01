@@ -98,7 +98,7 @@ def run():
     assert "Хамовники" in msg and "Частное лицо" in msg
 
     rows = dict(main.History(main.DB_PATH).db.execute("SELECT id, status FROM listings").fetchall())
-    assert rows == {"1": "baseline", "10": "sent", "2": "agent", "3": "agent", "4": "duplicate"}, rows
+    assert rows == {"1": "current", "10": "sent", "2": "agent", "3": "agent", "4": "duplicate"}, rows
 
     # 3) повторный проход: ничего нового
     asyncio.run(cycle())

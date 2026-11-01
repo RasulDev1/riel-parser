@@ -7,3 +7,4 @@ dist/
 __pycache__/
 .venv/
 browser_profile/
+debug_last_page.html

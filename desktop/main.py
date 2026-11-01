@@ -436,6 +436,7 @@ class Monitor:
         self.cfg = cfg
         self.history = History(DB_PATH)
         self.avito = AvitoClient(cookies=cfg.avito_cookies, page_loader=page_loader)
+        self.avito.debug_dir = BASE_DIR
         self.once = False
         self.tg = Telegram(cfg.token, cfg.chat_id, dry_run=dry_run)
         self.dry_run = dry_run
@@ -517,10 +518,18 @@ class Monitor:
         key = target.key
         first_run = self.history.target_is_new(key)
         if first_run and not self.cfg.notify_on_first_run:
+            # Подходящие объявления, которые уже висят на Авито, показываем в ленте как «уже были»,
+            # но не присылаем в Telegram. Остальные просто запоминаем.
+            for it in items:
+                self.history.save(it, target.client_name, "current")
             for it in all_items:
                 self.history.save(it, target.client_name, "baseline")
             self.history.mark_target(key)
-            log.info("   Первый запуск для этой ссылки: запомнил %s текущих объявлений, присылать буду только новые.", len(items))
+            log.info(
+                "   Первая проверка: сейчас на Авито подходит %s объявлений, они в ленте с пометкой «уже было». "
+                "Дальше буду показывать и присылать только новые.",
+                len(items),
+            )
             return
         self.history.mark_target(key)
 

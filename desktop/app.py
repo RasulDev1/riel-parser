@@ -37,6 +37,13 @@ UI_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "ui"
 # ----------------------------------------------------------------------------
 
 
+def new_loop() -> asyncio.AbstractEventLoop:
+    """curl_cffi на Windows работает только с selector-циклом asyncio."""
+    if sys.platform == "win32":
+        return asyncio.SelectorEventLoop()
+    return asyncio.new_event_loop()
+
+
 class UiLogHandler(logging.Handler):
     """Хранит последние строки лога, интерфейс забирает новые по id."""
 
@@ -172,9 +179,7 @@ class Runner:
             self.browser.cancel.clear()
 
         def target() -> None:
-            if sys.platform == "win32":
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
-            self.loop = asyncio.new_event_loop()
+            self.loop = new_loop()
             asyncio.set_event_loop(self.loop)
             self.monitor = Monitor(cfg, dry_run=dry_run, page_loader=self.browser if use_browser else None)
             ready.set()
@@ -292,6 +297,52 @@ class Api:
     def build_url(self, crit: dict) -> str:
         return criteria.build_search_url(crit or {})
 
+    def test_search(self, target: dict) -> dict:
+        """Разовая проверка поиска клиента: что пришло с Авито и что отсеялось по критериям."""
+        from avito_client import AvitoBlocked, AvitoClient
+
+        t = self._clean_target(target)
+        url = t["avito_url"] if t["mode"] == "url" else criteria.build_search_url(t["criteria"])
+        if t["mode"] == "url" and "avito.ru" not in url:
+            return {"ok": False, "error": "Укажите ссылку на поиск Авито"}
+        cfg = read_raw_config()
+        use_browser = bool(cfg.get("browser_mode", True)) and self._browser is not None and self._browser.window is not None
+
+        async def go():
+            client = AvitoClient(cookies=cfg.get("avito_cookies") or "", page_loader=self._browser if use_browser else None)
+            client.debug_dir = main.BASE_DIR
+            try:
+                return await client.search(url)
+            finally:
+                await client.close()
+
+        try:
+            loop = new_loop()
+            try:
+                items = loop.run_until_complete(go())
+            finally:
+                loop.close()
+        except AvitoBlocked as e:
+            return {"ok": False, "url": url, "error": f"Авито ограничил доступ ({e}). Пройдите проверку во встроенном браузере (Настройки) и попробуйте снова."}
+        except Exception as e:
+            log.exception("Проверка поиска не удалась")
+            return {"ok": False, "url": url, "error": str(e)}
+
+        reasons: dict[str, int] = {}
+        samples = []
+        matched = 0
+        for it in items:
+            ok, why = criteria.matches(it, t["criteria"]) if t["mode"] == "criteria" else (True, "")
+            matched += ok
+            if not ok:
+                reasons[why] = reasons.get(why, 0) + 1
+            if len(samples) < 12:
+                samples.append({"title": it.title, "price": it.price_text, "address": it.address, "ok": ok, "reason": why,
+                                "url": it.url})
+        log.info("Проверка поиска «%s»: на странице %s, подходит %s", t["client_name"], len(items), matched)
+        return {"ok": True, "url": url, "total": len(items), "matched": matched, "reasons": reasons, "samples": samples,
+                "via": "встроенный браузер" if use_browser else "прямой запрос"}
+
     # --- мониторинг ----------------------------------------------------------
 
     def start(self) -> dict:
@@ -360,7 +411,7 @@ class Api:
         )
         by = {s: (total, today or 0) for s, total, today in rows}
         per_client = dict(self._query(
-            "SELECT client_name, COUNT(*) FROM listings WHERE status IN ('sent', 'dry_run') GROUP BY client_name"
+            "SELECT client_name, COUNT(*) FROM listings WHERE status IN ('sent', 'dry_run', 'current') GROUP BY client_name"
         ))
         found = ("sent", "dry_run")
         return {
@@ -369,18 +420,19 @@ class Api:
             "agents": by.get("agent", (0, 0))[0],
             "duplicates": by.get("duplicate", (0, 0))[0],
             "baseline": by.get("baseline", (0, 0))[0],
+            "current": by.get("current", (0, 0))[0],
             "by_client": per_client,
         }
 
     def listings(self, status: str = "found", query: str = "", limit: int = 300) -> list[dict]:
         where, params = [], []
         if status == "found":
-            where.append("status IN ('sent', 'dry_run')")
+            where.append("status IN ('sent', 'dry_run', 'current')")
         elif status in ("agent", "duplicate"):
             where.append("status = ?")
             params.append(status)
         else:
-            where.append("status != 'baseline'")
+            where.append("status NOT IN ('baseline')")
         if query:
             where.append("(title LIKE ? OR address LIKE ? OR client_name LIKE ? OR description LIKE ?)")
             params += [f"%{query}%"] * 4

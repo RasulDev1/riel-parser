@@ -196,10 +196,27 @@ class AvitoClient:
             log.debug("Прогрев не удался: %s", e)
         self._warmed_up = True
 
+    debug_dir = None  # куда сохранять страницу, если на ней не нашлось объявлений
+
     async def search(self, url: str) -> list[Listing]:
         await self._warm_up()
         page = await self._get(normalize_search_url(url), referer=AVITO + "/")
-        return parse_search_page(page)
+        items = parse_search_page(page)
+        if not items:
+            title_m = _TITLE_RE.search(page[:50000])
+            log.warning(
+                "   На странице не распознано ни одного объявления. Заголовок страницы: «%s», размер %s КБ.",
+                _strip_tags(title_m.group(1)) if title_m else "нет",
+                len(page) // 1024,
+            )
+            if self.debug_dir is not None:
+                try:
+                    path = self.debug_dir / "debug_last_page.html"
+                    path.write_text(page, encoding="utf-8")
+                    log.warning("   Сохранил страницу в %s — пришлите этот файл разработчику.", path)
+                except OSError:
+                    pass
+        return items
 
     async def item_seller(self, listing: Listing) -> SellerInfo:
         """Открывает карточку объявления и достаёт данные о продавце."""

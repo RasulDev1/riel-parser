@@ -16,6 +16,7 @@ let firstFeedLoad = true;
 let feedClient = "";
 let options = null;
 const expanded = new Set();
+const checks = {}; // результаты «Проверить поиск» по индексу клиента
 
 // ---------------------------------------------------------------- навигация
 
@@ -64,6 +65,7 @@ function fmtCountdown(sec) {
 const STATUS = {
   sent: ["Отправлено в Telegram", "bg-brand-50 text-brand"],
   dry_run: ["Новый объект", "bg-brand-50 text-brand"],
+  current: ["Уже было на Авито при запуске", "bg-slate-100 text-slate-600"],
   agent: ["Агент", "bg-red-50 text-red-700"],
   duplicate: ["Дубль", "bg-slate-100 text-slate-600"],
 };
@@ -87,7 +89,7 @@ async function loadFeed() {
     $("#feed-empty-title").textContent = filtered ? "Ничего не найдено" : "Пока ничего нового";
     $("#feed-empty-text").textContent = filtered
       ? "Попробуйте изменить фильтр или поиск."
-      : "При первом запуске программа запоминает текущие объявления, а сюда попадут только те, что появятся после.";
+      : "Нажмите «Запустить». Если объявления не появляются, откройте «Клиенты и поиски» и нажмите «Проверить поиск».";
   }
 
   list.innerHTML = items
@@ -212,10 +214,12 @@ function clientCard(t, idx) {
         <div class="truncate text-[15px] font-semibold">${esc(t.client_name || "Новый клиент")}</div>
         <div class="truncate text-sm text-muted">${esc(summary(t))}</div>
       </div>
+      <button class="btn-secondary !py-1.5" data-act="check" title="Загрузить выдачу Авито и показать, что подходит">Проверить поиск</button>
       <button class="btn-secondary !py-1.5" data-act="toggle">${open ? "Свернуть" : "Изменить"}</button>
       <button class="icon-btn" data-act="open" title="Открыть поиск на Авито"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
       <button class="icon-btn hover:!bg-red-50 hover:!text-red-600" data-act="del" title="Удалить"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
     </div>
+    ${checkPanel(idx)}
     ${open ? `
     <div class="grid gap-5 border-t border-line px-5 py-5">
       <div class="flex flex-wrap items-end gap-4">
@@ -263,6 +267,33 @@ function clientCard(t, idx) {
           <span class="field-hint">Через запятую. Проверяются заголовок, адрес и описание.</span></label>
       </div>`}
     </div>` : ""}
+  </div>`;
+}
+
+function checkPanel(idx) {
+  const r = checks[idx];
+  if (!r) return "";
+  if (r.loading) return `<div class="border-t border-line px-5 py-4 text-sm text-muted">Загружаю выдачу Авито… Это может занять до минуты.</div>`;
+  if (!r.ok) return `<div class="border-t border-line bg-red-50 px-5 py-4 text-sm text-red-700">Не получилось: ${esc(r.error)}</div>`;
+  const reasons = Object.entries(r.reasons || {}).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span class="badge bg-slate-100 text-slate-600">${esc(k)}: ${v}</span>`).join(" ");
+  const verdict = r.total === 0
+    ? `<b class="text-red-700">Авито вернул страницу без объявлений.</b> В папке программы сохранён файл <code>debug_last_page.html</code>, пришлите его разработчику.`
+    : r.matched === 0
+      ? `<b class="text-amber-700">На странице ${r.total} объявлений, но ни одно не подошло под критерии.</b> Ослабьте фильтры.`
+      : `<b class="text-brand">Работает: на странице ${r.total} объявлений, под критерии подходит ${r.matched}.</b>`;
+  return `<div class="border-t border-line px-5 py-4 text-sm">
+    <div class="flex items-start justify-between gap-4"><div>${verdict}</div>
+      <button class="text-xs text-muted hover:text-ink" data-act="check-close">Скрыть</button></div>
+    ${reasons ? `<div class="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted">Отсеяно: ${reasons}</div>` : ""}
+    ${r.samples?.length ? `<div class="mt-3 grid gap-1">${r.samples.map((x) => `
+      <div class="flex items-center gap-2 truncate">
+        <span class="${x.ok ? "text-brand" : "text-slate-400"}">${x.ok ? "✓" : "✕"}</span>
+        <span class="truncate ${x.ok ? "" : "text-muted"}">${esc(x.title)}</span>
+        <span class="shrink-0 tabular-nums text-muted">${esc(x.price)}</span>
+        ${x.ok ? "" : `<span class="shrink-0 text-xs text-slate-400">(${esc(x.reason)})</span>`}
+      </div>`).join("")}</div>` : ""}
+    <div class="mt-3 truncate text-xs text-muted">Запрос (${esc(r.via || "")}): ${esc(r.url || "")}</div>
   </div>`;
 }
 
@@ -315,14 +346,14 @@ $("#clients-list").addEventListener("input", (e) => {
   markDirty();
 });
 
-function rerenderCard(card) {
+function rerenderCard(card, changed = true) {
   const idx = +card.dataset.idx;
   const fresh = document.createElement("div");
   fresh.innerHTML = clientCard(config.targets_to_watch[idx], idx);
   const el = fresh.firstElementChild;
   card.replaceWith(el);
   fillCard(el, config.targets_to_watch[idx]);
-  markDirty();
+  if (changed) markDirty();
 }
 
 $("#clients-list").addEventListener("click", async (e) => {
@@ -333,9 +364,19 @@ $("#clients-list").addEventListener("click", async (e) => {
   const act = e.target.closest("[data-act]")?.dataset.act;
   const mode = e.target.closest("[data-mode]")?.dataset.mode;
   const room = e.target.closest("[data-room]")?.dataset.room;
-  if (act === "toggle") {
+  if (act === "check") {
+    checks[idx] = { loading: true };
+    rerenderCard(card, false);
+    const r = await api.test_search(t);
+    checks[idx] = r;
+    const fresh = $(`#clients-list [data-idx="${idx}"]`);
+    if (fresh) rerenderCard(fresh, false);
+  } else if (act === "check-close") {
+    delete checks[idx];
+    rerenderCard(card, false);
+  } else if (act === "toggle") {
     expanded.has(idx) ? expanded.delete(idx) : expanded.add(idx);
-    rerenderCard(card);
+    rerenderCard(card, false);
   } else if (act === "del") {
     if (!confirm(`Удалить поиск «${t.client_name || "без имени"}»?`)) return;
     config.targets_to_watch.splice(idx, 1);
