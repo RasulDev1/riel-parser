@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Riel Parser</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body class="h-screen overflow-hidden bg-canvas text-ink antialiased">
+<div class="flex h-full">
+
+  <!-- Боковая панель -->
+  <aside class="flex w-64 shrink-0 flex-col border-r border-line bg-white">
+    <div class="flex items-center gap-3 px-5 pb-6 pt-6">
+      <div class="grid size-10 place-items-center rounded-xl bg-brand text-white shadow-sm">
+        <svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/></svg>
+      </div>
+      <div>
+        <div class="text-[15px] font-semibold leading-tight">Riel Parser</div>
+        <div class="text-xs text-muted">новые объекты Авито</div>
+      </div>
+    </div>
+
+    <nav class="flex flex-col gap-1 px-3" id="nav">
+      <button data-tab="feed" class="nav-item">
+        <svg viewBox="0 0 24 24" class="size-[18px]" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg>
+        Лента объектов
+        <span id="nav-feed-badge" class="ml-auto hidden rounded-full bg-brand px-2 py-0.5 text-[11px] font-semibold text-white"></span>
+      </button>
+      <button data-tab="clients" class="nav-item">
+        <svg viewBox="0 0 24 24" class="size-[18px]" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/><path d="M18.5 14.5A6.5 6.5 0 0 1 21.5 20"/></svg>
+        Клиенты и поиски
+      </button>
+      <button data-tab="settings" class="nav-item">
+        <svg viewBox="0 0 24 24" class="size-[18px]" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+        Настройки
+      </button>
+      <button data-tab="log" class="nav-item">
+        <svg viewBox="0 0 24 24" class="size-[18px]" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
+        Журнал
+      </button>
+    </nav>
+
+    <!-- Статус и кнопка запуска -->
+    <div class="mt-auto p-4">
+      <div class="rounded-2xl border border-line bg-canvas p-4">
+        <div class="flex items-center gap-2 text-sm font-medium">
+          <span id="status-dot" class="relative flex size-2.5">
+            <span class="dot-ping absolute inline-flex size-full rounded-full opacity-60"></span>
+            <span class="dot-core relative inline-flex size-2.5 rounded-full"></span>
+          </span>
+          <span id="status-title">Остановлено</span>
+        </div>
+        <div id="status-sub" class="mt-1 min-h-[2.5rem] text-xs leading-relaxed text-muted">Нажмите «Запустить», чтобы начать следить за новыми объявлениями.</div>
+        <button id="toggle-btn" class="btn-primary mt-3 w-full justify-center">
+          <span id="toggle-label">Запустить</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Основная область -->
+  <main class="flex min-w-0 flex-1 flex-col">
+    <div id="banner" class="hidden border-b border-amber-200 bg-amber-50 px-8 py-2.5 text-sm text-amber-900"></div>
+
+    <!-- ЛЕНТА -->
+    <section data-panel="feed" class="panel">
+      <header class="panel-head">
+        <div>
+          <h1 class="panel-title">Лента объектов</h1>
+          <p class="panel-sub">Новые объявления от собственников, которые прошли фильтры</p>
+        </div>
+      </header>
+
+      <div class="grid grid-cols-4 gap-4 px-8">
+        <div class="stat"><div class="stat-label">Найдено сегодня</div><div class="stat-value text-brand" id="c-today">0</div></div>
+        <div class="stat"><div class="stat-label">Найдено всего</div><div class="stat-value" id="c-total">0</div></div>
+        <div class="stat"><div class="stat-label">Отсеяно агентов</div><div class="stat-value" id="c-agents">0</div></div>
+        <div class="stat"><div class="stat-label">Дубли</div><div class="stat-value" id="c-dups">0</div></div>
+      </div>
+
+      <div class="flex items-center gap-3 px-8 pb-4 pt-6">
+        <div class="seg" id="feed-filter">
+          <button data-status="found" class="seg-item active">Подходящие</button>
+          <button data-status="agent" class="seg-item">Агенты</button>
+          <button data-status="duplicate" class="seg-item">Дубли</button>
+          <button data-status="all" class="seg-item">Все</button>
+        </div>
+        <select id="feed-client" class="input w-52"><option value="">Все клиенты</option></select>
+        <div class="relative ml-auto w-72">
+          <svg viewBox="0 0 24 24" class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="feed-search" class="input pl-9" placeholder="Поиск по адресу, тексту, клиенту" />
+        </div>
+      </div>
+
+      <div class="scroll flex-1 px-8 pb-8">
+        <div id="feed-list" class="grid gap-3"></div>
+        <div id="feed-empty" class="hidden rounded-2xl border border-dashed border-line bg-white px-8 py-14 text-center">
+          <div class="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-brand-50 text-brand">
+            <svg viewBox="0 0 24 24" class="size-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </div>
+          <div class="font-medium" id="feed-empty-title">Пока ничего нового</div>
+          <p class="mx-auto mt-1 max-w-md text-sm text-muted" id="feed-empty-text">При первом запуске программа запоминает текущие объявления, а сюда попадут только те, что появятся после.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- КЛИЕНТЫ -->
+    <section data-panel="clients" class="panel hidden">
+      <header class="panel-head">
+        <div>
+          <h1 class="panel-title">Клиенты и поиски</h1>
+          <p class="panel-sub">Настройте фильтры на Авито в браузере, скопируйте ссылку из адресной строки и вставьте сюда</p>
+        </div>
+        <div class="flex gap-2">
+          <button id="add-client" class="btn-secondary">
+            <svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Добавить
+          </button>
+          <button data-save class="btn-primary">Сохранить</button>
+        </div>
+      </header>
+      <div class="scroll flex-1 px-8 pb-8">
+        <div id="clients-list" class="grid gap-3"></div>
+        <div id="clients-empty" class="hidden rounded-2xl border border-dashed border-line bg-white px-8 py-14 text-center text-sm text-muted">
+          Нет ни одного поиска. Нажмите «Добавить» и вставьте ссылку с Авито.
+        </div>
+      </div>
+    </section>
+
+    <!-- НАСТРОЙКИ -->
+    <section data-panel="settings" class="panel hidden">
+      <header class="panel-head">
+        <div>
+          <h1 class="panel-title">Настройки</h1>
+          <p class="panel-sub">Изменения применяются сразу после сохранения</p>
+        </div>
+        <button data-save class="btn-primary">Сохранить</button>
+      </header>
+      <div class="scroll flex-1 px-8 pb-8">
+        <div class="grid max-w-3xl gap-5">
+
+          <div class="card">
+            <div class="card-head">
+              <div><div class="card-title">Telegram</div><div class="card-sub">Куда присылать новые объекты. Можно не заполнять, тогда они будут только в ленте.</div></div>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <label class="field"><span class="field-label">Токен бота</span>
+                <input id="s-token" class="input font-mono text-[13px]" placeholder="123456:ABC..." autocomplete="off" />
+                <span class="field-hint">Получите у @BotFather командой /newbot</span></label>
+              <label class="field"><span class="field-label">Chat ID</span>
+                <input id="s-chat" class="input font-mono text-[13px]" placeholder="123456789" />
+                <span class="field-hint">Узнайте у @userinfobot. Сначала напишите своему боту.</span></label>
+            </div>
+            <div class="mt-4 flex items-center gap-3">
+              <button id="test-tg" class="btn-secondary">Отправить тестовое сообщение</button>
+              <span id="test-tg-result" class="text-sm"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">Частота проверки</div><div class="card-sub">Чем реже, тем меньше шанс, что Авито покажет капчу.</div></div></div>
+            <div class="grid grid-cols-2 gap-4">
+              <label class="field"><span class="field-label">Интервал между проверками, сек</span>
+                <input id="s-interval" type="number" min="10" class="input" />
+                <span class="field-hint">Рекомендуем 45–90. Минимум 10.</span></label>
+              <label class="field"><span class="field-label">Случайный разброс, ± сек</span>
+                <input id="s-jitter" type="number" min="0" class="input" />
+                <span class="field-hint">Сбивает ритм, чтобы запросы не шли «как робот».</span></label>
+            </div>
+            <label class="toggle-row mt-4">
+              <input id="s-first" type="checkbox" class="toggle" />
+              <span><span class="font-medium">Присылать объявления при первом запуске</span><br /><span class="text-muted">Обычно выключено: иначе сразу придут все текущие объявления по ссылке.</span></span>
+            </label>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">Анти-Агент</div><div class="card-sub">Проверяет профиль продавца и отсеивает агентства и перекупщиков.</div></div>
+              <input id="s-aa" type="checkbox" class="toggle" /></div>
+            <div class="grid grid-cols-2 gap-4" id="aa-fields">
+              <label class="field"><span class="field-label">Макс. активных объявлений у продавца</span>
+                <input id="s-aa-active" type="number" min="0" class="input" />
+                <span class="field-hint">1 — у собственника только этот объект.</span></label>
+              <label class="field"><span class="field-label">Макс. завершённых объявлений</span>
+                <input id="s-aa-closed" type="number" min="0" class="input" />
+                <span class="field-hint">0 — раньше ничего не продавал.</span></label>
+            </div>
+            <label class="toggle-row mt-4">
+              <input id="s-aa-unknown" type="checkbox" class="toggle" />
+              <span><span class="font-medium">Пропускать, если продавца проверить не удалось</span><br /><span class="text-muted">Строже, но можно потерять часть хороших объектов.</span></span>
+            </label>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">Куки Авито</div><div class="card-sub">Нужны, только если Авито начал блокировать (ошибки 429/439).</div></div></div>
+            <textarea id="s-cookies" rows="3" class="input font-mono text-xs" placeholder="Необязательно. Вставьте строку Cookie из браузера"></textarea>
+            <details class="mt-3 text-sm text-muted">
+              <summary class="cursor-pointer select-none font-medium text-ink">Как получить куки</summary>
+              <ol class="ml-5 mt-2 list-decimal space-y-1">
+                <li>Откройте avito.ru в браузере на этом компьютере, пройдите капчу, если есть.</li>
+                <li>Нажмите F12, вкладка «Сеть» (Network), обновите страницу.</li>
+                <li>Кликните первый запрос www.avito.ru → «Заголовки» → «Заголовки запроса».</li>
+                <li>Скопируйте значение строки Cookie целиком и вставьте сюда. Обновляйте раз в несколько дней.</li>
+              </ol>
+            </details>
+          </div>
+
+          <p class="text-xs text-muted">Пользовательское соглашение Авито ограничивает автоматический сбор данных. Используйте приложение для своей работы и держите разумный интервал.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ЖУРНАЛ -->
+    <section data-panel="log" class="panel hidden">
+      <header class="panel-head">
+        <div>
+          <h1 class="panel-title">Журнал</h1>
+          <p class="panel-sub">Что делает программа прямо сейчас. Полный лог пишется в файл parser.log.</p>
+        </div>
+        <button id="log-clear" class="btn-secondary">Очистить экран</button>
+      </header>
+      <div class="scroll mx-8 mb-8 flex-1 rounded-2xl bg-[#0F1720] p-4 font-mono text-[12.5px] leading-relaxed text-slate-200" id="log-box"></div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 translate-y-4 rounded-xl px-4 py-2.5 text-sm font-medium text-white opacity-0 shadow-lg transition"></div>
+
+<template id="client-row">
+  <div class="card flex items-start gap-4 !p-4">
+    <input type="checkbox" class="toggle mt-7" data-k="enabled" title="Следить за этой ссылкой" />
+    <label class="field w-56 shrink-0"><span class="field-label">Клиент</span><input class="input" data-k="client_name" placeholder="Иван, 1к до 12 млн" /></label>
+    <label class="field min-w-0 flex-1"><span class="field-label">Ссылка поиска на Авито</span><input class="input font-mono text-[12.5px]" data-k="avito_url" placeholder="https://www.avito.ru/moskva/kvartiry/prodam/..." /></label>
+    <div class="mt-6 flex gap-1">
+      <button class="icon-btn" data-act="open" title="Открыть в браузере"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
+      <button class="icon-btn hover:!bg-red-50 hover:!text-red-600" data-act="del" title="Удалить"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+    </div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

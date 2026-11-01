@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def ensure_dependencies() -> None:
+def ensure_dependencies(extra: dict[str, str] | None = None) -> None:
     """
     При первом запуске сам ставит недостающие библиотеки через pip.
     В собранном .exe всё уже внутри, там ничего не делаем.
@@ -37,7 +37,7 @@ def ensure_dependencies() -> None:
     import importlib.util
     import subprocess
 
-    required = {"httpx": "httpx>=0.27", "curl_cffi": "curl_cffi>=0.7"}
+    required = {"httpx": "httpx>=0.27", "curl_cffi": "curl_cffi>=0.7", **(extra or {})}
     missing = [pkg for module, pkg in required.items() if importlib.util.find_spec(module) is None]
     if not missing:
         return
@@ -140,15 +140,42 @@ def load_config() -> Config:
     except json.JSONDecodeError as e:
         log.error("Ошибка в config.json (строка %s, столбец %s): %s", e.lineno, e.colno, e.msg)
         raise SystemExit(1)
+    try:
+        return parse_config(raw)
+    except ValueError as e:
+        log.error("%s", e)
+        raise SystemExit(1)
 
+
+def read_raw_config() -> dict:
+    """Конфиг как словарь (для интерфейса). Недостающие поля берутся из шаблона."""
+    raw: dict = {}
+    if CONFIG_PATH.exists():
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError:
+            raw = {}
+    merged = {**CONFIG_TEMPLATE, **raw}
+    merged["anti_agent"] = {**CONFIG_TEMPLATE["anti_agent"], **(raw.get("anti_agent") or {})}
+    if "targets_to_watch" not in raw:
+        merged["targets_to_watch"] = []
+    return merged
+
+
+def write_raw_config(raw: dict) -> None:
+    tmp = CONFIG_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CONFIG_PATH)
+
+
+def parse_config(raw: dict) -> Config:
     targets = [
-        Target(str(t.get("client_name") or "Без имени"), str(t["avito_url"]))
+        Target(str(t.get("client_name") or "Без имени"), str(t["avito_url"]).strip())
         for t in raw.get("targets_to_watch", [])
-        if t.get("avito_url")
+        if t.get("avito_url") and t.get("enabled", True)
     ]
     if not targets:
-        log.error("В config.json нет ни одной ссылки в targets_to_watch.")
-        raise SystemExit(1)
+        raise ValueError("Нет ни одной активной ссылки для поиска. Добавьте клиента со ссылкой на Авито.")
 
     interval = float(raw.get("global_check_interval_seconds", 60))
     if interval < MIN_INTERVAL:
@@ -179,21 +206,30 @@ def load_config() -> Config:
 
 
 class History:
+    EXTRA_COLUMNS = {
+        "price_text": "TEXT",
+        "address": "TEXT",
+        "description": "TEXT",
+        "seller": "TEXT",
+        "reason": "TEXT",
+    }
+
     def __init__(self, path: Path):
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, timeout=10)
+        self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(
             """
             CREATE TABLE IF NOT EXISTS listings (
-                id          TEXT PRIMARY KEY,
+                id          TEXT NOT NULL,
                 text_hash   TEXT,
                 client_name TEXT,
                 title       TEXT,
                 price       INTEGER,
                 url         TEXT,
                 status      TEXT,          -- sent / agent / duplicate / baseline / dry_run
-                created_at  INTEGER
+                created_at  INTEGER,
+                PRIMARY KEY (id, client_name)
             );
-            CREATE INDEX IF NOT EXISTS idx_listings_hash ON listings(text_hash);
             CREATE TABLE IF NOT EXISTS sellers (
                 profile_url TEXT PRIMARY KEY,
                 is_agent    INTEGER,
@@ -205,6 +241,26 @@ class History:
             );
             """
         )
+        info = list(self.db.execute("PRAGMA table_info(listings)"))
+        if [r[1] for r in info if r[5]] == ["id"]:
+            # старая база: ключ был только по id, а одно объявление может подойти нескольким клиентам
+            self.db.executescript(
+                """
+                ALTER TABLE listings RENAME TO listings_old;
+                CREATE TABLE listings (id TEXT NOT NULL, text_hash TEXT, client_name TEXT, title TEXT,
+                    price INTEGER, url TEXT, status TEXT, created_at INTEGER, PRIMARY KEY (id, client_name));
+                INSERT OR IGNORE INTO listings (id, text_hash, client_name, title, price, url, status, created_at)
+                    SELECT id, text_hash, client_name, title, price, url, status, created_at FROM listings_old;
+                DROP TABLE listings_old;
+                """
+            )
+            info = list(self.db.execute("PRAGMA table_info(listings)"))
+        have = {row[1] for row in info}
+        for col, typ in self.EXTRA_COLUMNS.items():
+            if col not in have:  # миграция старой базы
+                self.db.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_listings_hash ON listings(client_name, text_hash)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_listings_created ON listings(created_at)")
         self.db.commit()
 
     @staticmethod
@@ -214,18 +270,26 @@ class History:
             return None
         return hashlib.sha1(text[:500].encode("utf-8")).hexdigest()
 
-    def seen_id(self, item_id: str) -> bool:
-        return self.db.execute("SELECT 1 FROM listings WHERE id = ?", (item_id,)).fetchone() is not None
+    def seen_id(self, item_id: str, client: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM listings WHERE id = ? AND client_name = ?", (item_id, client)
+        ).fetchone() is not None
 
-    def seen_text(self, h: str | None) -> bool:
+    def seen_text(self, h: str | None, client: str) -> bool:
         if not h:
             return False
-        return self.db.execute("SELECT 1 FROM listings WHERE text_hash = ?", (h,)).fetchone() is not None
+        return self.db.execute(
+            "SELECT 1 FROM listings WHERE text_hash = ? AND client_name = ?", (h, client)
+        ).fetchone() is not None
 
-    def save(self, item: Listing, client: str, status: str) -> None:
+    def save(self, item: Listing, client: str, status: str, seller: str = "", reason: str = "") -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO listings VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (item.id, self.text_hash(item), client, item.title, item.price, item.url, status, int(time.time())),
+            "INSERT OR IGNORE INTO listings (id, text_hash, client_name, title, price, url, status, created_at,"
+            " price_text, address, description, seller, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                item.id, self.text_hash(item), client, item.title, item.price, item.url, status, int(time.time()),
+                item.price_text, item.address, item.description[:600], seller, reason,
+            ),
         )
         self.db.commit()
 
@@ -292,6 +356,13 @@ class Telegram:
         return False
 
 
+def seller_label(seller: SellerInfo | None) -> str:
+    if seller is None or not seller.checked:
+        return ""
+    cnt = f", объявлений: {seller.active_count}" if seller.active_count is not None else ""
+    return f"{seller.label or 'продавец'}{cnt}"
+
+
 def format_message(client: str, item: Listing, seller: SellerInfo | None) -> str:
     e = html.escape
     desc = item.description[:150].rstrip()
@@ -331,6 +402,24 @@ class Monitor:
         self.tg = Telegram(cfg.token, cfg.chat_id, dry_run=dry_run)
         self.dry_run = dry_run
         self.block_streak = 0
+        self._stop = asyncio.Event()
+        # Состояние для интерфейса
+        self.state: dict = {"phase": "idle", "client": None, "next_check_at": None, "last_error": None,
+                            "last_cycle_at": None}
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    async def _sleep(self, delay: float) -> None:
+        """Пауза, которую можно прервать кнопкой «Стоп»."""
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=max(0.0, delay))
+        except asyncio.TimeoutError:
+            pass
 
     async def close(self) -> None:
         await self.avito.close()
@@ -375,6 +464,7 @@ class Monitor:
 
     async def process_target(self, target: Target) -> None:
         log.info("🔎 Ищу для «%s»...", target.client_name)
+        self.state.update(phase="checking", client=target.client_name, next_check_at=None)
         items = await self.avito.search(target.avito_url)
         log.info("   На странице %s объявлений", len(items))
         if not items:
@@ -390,25 +480,27 @@ class Monitor:
             return
         self.history.mark_target(key)
 
-        fresh = [it for it in items if not self.history.seen_id(it.id)]
+        fresh = [it for it in items if not self.history.seen_id(it.id, target.client_name)]
         sent = 0
         for item in fresh:
-            if self.history.seen_text(self.history.text_hash(item)):
+            if self.stopped:
+                return
+            if self.history.seen_text(self.history.text_hash(item), target.client_name):
                 log.info("   ↪ Дубль по тексту: %s", item.title)
-                self.history.save(item, target.client_name, "duplicate")
+                self.history.save(item, target.client_name, "duplicate", reason="такой же текст уже был")
                 continue
 
             await asyncio.sleep(random.uniform(1.5, 3.5))
             is_agent, reason, seller = await self.check_seller(item)
             if is_agent:
                 log.info("   🚫 Агент, пропускаю: %s (%s)", item.title, reason)
-                self.history.save(item, target.client_name, "agent")
+                self.history.save(item, target.client_name, "agent", seller=seller_label(seller), reason=reason)
                 continue
 
             ok = await self.tg.send(format_message(target.client_name, item, seller))
             if ok:
                 sent += 1
-                self.history.save(item, target.client_name, "dry_run" if self.dry_run else "sent")
+                self.history.save(item, target.client_name, "dry_run" if self.dry_run else "sent", seller=seller_label(seller))
                 log.info("   ✅ Отправил: %s, %s", item.title, item.price_text)
             else:
                 log.warning("   Не отправилось, попробую при следующей проверке: %s", item.title)
@@ -417,12 +509,15 @@ class Monitor:
 
     async def run_once(self) -> None:
         for i, target in enumerate(self.cfg.targets):
+            if self.stopped:
+                return
             try:
                 await self.process_target(target)
                 self.block_streak = 0
             except AvitoBlocked as e:
                 self.block_streak += 1
                 pause = min(60 * 2 ** (self.block_streak - 1), 30 * 60)
+                self.state["last_error"] = f"Авито ограничил доступ ({e})"
                 log.error(
                     "⛔ Авито ограничил доступ (%s). Это защита от частых запросов с вашего IP.\n"
                     "   Что сделать: откройте avito.ru в браузере на этом ПК и, если есть капча, пройдите её.\n"
@@ -439,9 +534,11 @@ class Monitor:
                         f"Парсер сделает паузу {pause // 60} мин и продолжит сам. "
                         "Если повторяется, откройте Авито в браузере и пройдите капчу."
                     )
-                await asyncio.sleep(pause)
+                self.state.update(phase="blocked", next_check_at=time.time() + pause)
+                await self._sleep(pause)
                 self.avito._warmed_up = False
             except Exception as e:
+                self.state["last_error"] = f"{target.client_name}: {e}"
                 log.exception("Ошибка при проверке «%s»: %s", target.client_name, e)
 
             if i < len(self.cfg.targets) - 1:
@@ -450,13 +547,18 @@ class Monitor:
     async def _pause(self) -> None:
         delay = max(MIN_INTERVAL / 2, self.cfg.interval + random.uniform(-self.cfg.jitter, self.cfg.jitter))
         log.info("⏳ Ожидание %.1f с...", delay)
-        await asyncio.sleep(delay)
+        self.state.update(phase="waiting", client=None, next_check_at=time.time() + delay)
+        await self._sleep(delay)
 
     async def run_forever(self) -> None:
         log.info("Запущено. Ссылок для мониторинга: %s. Интервал %s±%s с.", len(self.cfg.targets), self.cfg.interval, self.cfg.jitter)
-        while True:
+        while not self.stopped:
             await self.run_once()
-            await self._pause()
+            self.state["last_cycle_at"] = time.time()
+            if not self.stopped:
+                await self._pause()
+        self.state.update(phase="idle", client=None, next_check_at=None)
+        log.info("Мониторинг остановлен.")
 
 
 # ----------------------------------------------------------------------------
@@ -466,14 +568,15 @@ class Monitor:
 
 def setup_logging(verbose: bool) -> None:
     fmt = logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S")
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
     file = logging.FileHandler(LOG_PATH, encoding="utf-8")
     file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    root.addHandler(console)
     root.addHandler(file)
+    if sys.stdout is not None:  # в оконном .exe консоли нет
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(fmt)
+        root.addHandler(console)
     for noisy in ("httpx", "httpcore", "curl_cffi"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

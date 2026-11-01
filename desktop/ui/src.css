@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; font-size: 14px; }
+  ::selection { background: rgb(16 163 127 / 0.2); }
+  input[type="number"]::-webkit-inner-spin-button { opacity: 0.4; }
+}
+
+@layer components {
+  .nav-item { @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] font-medium text-muted transition hover:bg-canvas hover:text-ink; }
+  .nav-item.active { @apply bg-brand-50 text-brand; }
+
+  .panel { @apply flex min-h-0 flex-1 flex-col; }
+  .panel-head { @apply flex items-end justify-between gap-6 px-8 pb-6 pt-8; }
+  .panel-title { @apply text-[22px] font-semibold tracking-tight; }
+  .panel-sub { @apply mt-1 text-sm text-muted; }
+  .scroll { @apply min-h-0 overflow-y-auto; }
+
+  .stat { @apply rounded-2xl border border-line bg-white px-5 py-4; }
+  .stat-label { @apply text-xs font-medium text-muted; }
+  .stat-value { @apply mt-1 text-[26px] font-semibold tabular-nums tracking-tight; }
+
+  .card { @apply rounded-2xl border border-line bg-white p-6; }
+  .card-head { @apply mb-5 flex items-start justify-between gap-4; }
+  .card-title { @apply text-[15px] font-semibold; }
+  .card-sub { @apply mt-0.5 text-sm text-muted; }
+
+  .field { @apply flex flex-col gap-1.5; }
+  .field-label { @apply text-xs font-medium text-muted; }
+  .field-hint { @apply text-xs text-muted/80; }
+  .input { @apply w-full rounded-xl border border-line bg-white px-3 py-2 text-sm outline-none transition placeholder:text-muted/60 focus:border-brand focus:ring-4 focus:ring-brand/15; }
+
+  .btn-primary { @apply inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-600 active:translate-y-px disabled:opacity-50; }
+  .btn-primary.danger { @apply bg-ink hover:bg-black; }
+  .btn-secondary { @apply inline-flex items-center gap-2 rounded-xl border border-line bg-white px-4 py-2 text-sm font-medium transition hover:bg-canvas active:translate-y-px disabled:opacity-50; }
+  .icon-btn { @apply grid size-9 place-items-center rounded-lg text-muted transition hover:bg-canvas hover:text-ink; }
+
+  .seg { @apply inline-flex rounded-xl border border-line bg-white p-1; }
+  .seg-item { @apply rounded-lg px-3 py-1.5 text-sm font-medium text-muted transition hover:text-ink; }
+  .seg-item.active { @apply bg-ink text-white; }
+
+  .toggle { @apply relative h-6 w-11 shrink-0 cursor-pointer appearance-none rounded-full bg-slate-300 transition before:absolute before:left-0.5 before:top-0.5 before:size-5 before:rounded-full before:bg-white before:shadow before:transition checked:bg-brand checked:before:translate-x-5; }
+  .toggle-row { @apply flex cursor-pointer items-start gap-3 text-sm; }
+
+  .badge { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11.5px] font-medium; }
+
+  .listing { @apply grid grid-cols-[1fr_auto] gap-x-6 rounded-2xl border border-line bg-white p-5 transition hover:border-brand/40 hover:shadow-[0_4px_20px_-8px_rgb(15_23_32/0.15)]; }
+}
+
+#status-dot .dot-core { background: #94A3B8; }
+#status-dot .dot-ping { display: none; }
+#status-dot.on .dot-core { background: #10A37F; }
+#status-dot.on .dot-ping { display: inline-flex; background: #10A37F; animation: ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite; }
+#status-dot.warn .dot-core { background: #F59E0B; }
+@keyframes ping { 75%, 100% { transform: scale(2.2); opacity: 0; } }
+
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-warning { color: #FCD34D; }
+.log-error { color: #FCA5A5; }
+
+.fade-in { animation: fadeIn 0.35s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
