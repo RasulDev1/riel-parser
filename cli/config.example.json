@@ -1,0 +1,23 @@
+{
+  "telegram_bot_token": "123456:ABC-ваш-токен-от-BotFather",
+  "rieltor_chat_id": "123456789",
+  "global_check_interval_seconds": 60,
+  "jitter_seconds": 3,
+  "notify_on_first_run": false,
+  "anti_agent": {
+    "enabled": true,
+    "max_active_listings": 1,
+    "max_closed_listings": 0,
+    "skip_if_unknown": false
+  },
+  "targets_to_watch": [
+    {
+      "client_name": "Иван 1к",
+      "avito_url": "https://www.avito.ru/moskva/kvartiry/prodam/1-komnatnye-ASgBAgICAkSSA8YQygiAWQ?pmax=12000000"
+    },
+    {
+      "client_name": "Мария 2к",
+      "avito_url": "https://www.avito.ru/kazan/kvartiry/prodam/2-komnatnye-ASgBAgICAkSSA8YQygiCWQ?pmax=9000000"
+    }
+  ]
+}

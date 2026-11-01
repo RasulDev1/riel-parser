@@ -1,0 +1,8 @@
+config.json
+history.db
+parser.log
+build/
+dist/
+*.spec
+__pycache__/
+.venv/
