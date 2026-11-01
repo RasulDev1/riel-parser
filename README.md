@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Парсер недвижимости Авито
 
-## Getting Started
+Next.js 15 + TypeScript + Tailwind CSS 4 + Node.js. Собирает объявления о недвижимости с Авито и фильтрует их по:
 
-First, run the development server:
+- **цене** (передаётся в запрос Авито: `pmin`/`pmax`);
+- **городу** и категории (квартиры, комнаты, дома, коммерческая; продажа/аренда);
+- **району / метро / улице** (поиск по адресу объявления);
+- **площади**, м²;
+- **этажу**, этажности дома, «не первый / не последний».
+
+Результаты показываются таблицей с сортировкой и выгружаются в CSV (открывается в Excel).
+
+## Запуск
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev          # http://localhost:3000
+npm run test:parser  # офлайн-проверка парсера на HTML-фикстуре
+npm run test:parser -- путь/к/сохранённой_странице_avito.html
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Переменные окружения (необязательно, `.env.local`):
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `AVITO_DELAY_MS` | `2500` | Пауза между страницами выдачи, мс |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Как устроено
 
-## Learn More
+- `src/lib/avito/client.ts` строит URL выдачи, скачивает страницы с паузами, распознаёт блокировку.
+- `src/lib/avito/parse.ts` разбирает HTML (cheerio) и достаёт площадь и этажи из заголовка вида «2-к. квартира, 54,3 м², 5/9 эт.».
+- `src/lib/filter.ts` выполняет локальную фильтрацию: площадь, этажи и район у Авито кодируются внутренними id, поэтому они проверяются после парсинга.
+- `src/app/api/parse/route.ts` — API `POST /api/parse`.
 
-To learn more about Next.js, take a look at the following resources:
+## Ограничения
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Площадь, этажи и район фильтруются **по скачанным страницам**, поэтому при узких фильтрах увеличивайте число страниц.
+- Авито активно защищается от ботов (лимиты, капча, блокировка IP). Держите паузы между запросами и не обходите много страниц за раз. Для стабильной работы понадобятся прокси или headless-браузер.
+- Пользовательское соглашение Авито запрещает автоматический сбор данных. Используйте парсер для личного анализа рынка и не распространяйте собранные данные.
+- Если Авито поменяет вёрстку, селекторы `data-marker` в `parse.ts` нужно будет обновить.
