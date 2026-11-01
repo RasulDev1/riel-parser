@@ -57,6 +57,8 @@ ensure_dependencies()
 import httpx  # noqa: E402
 
 from avito_client import AvitoBlocked, AvitoClient, Listing, SellerInfo, normalize_search_url  # noqa: E402
+from criteria import build_search_url, criteria_key, describe, matches  # noqa: E402
+from criteria import normalize as normalize_criteria  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Пути: рядом со скриптом или рядом с .exe (PyInstaller)
@@ -85,8 +87,25 @@ CONFIG_TEMPLATE = {
     "targets_to_watch": [
         {
             "client_name": "Иван 1к",
-            "avito_url": "https://www.avito.ru/moskva/kvartiry/prodam/1-komnatnye-ASgBAgICAkSSA8YQygiAWQ?pmax=12000000",
-        }
+            "enabled": True,
+            "mode": "criteria",
+            "criteria": {
+                "city": "moskva",
+                "category": "kvartiry",
+                "deal": "prodam",
+                "rooms": ["1"],
+                "price_max": 12000000,
+                "area_min": 30,
+                "not_first_floor": True,
+                "private_only": True,
+            },
+        },
+        {
+            "client_name": "Мария (своя ссылка)",
+            "enabled": False,
+            "mode": "url",
+            "avito_url": "https://www.avito.ru/moskva/kvartiry/prodam/2-komnatnye-ASgBAgICAkSSA8YQygiCWQ?pmax=25000000",
+        },
     ],
 }
 
@@ -102,6 +121,12 @@ MIN_INTERVAL = 10  # быстрее Авито почти гарантирова
 class Target:
     client_name: str
     avito_url: str
+    criteria: dict | None = None  # если задано — ссылка собрана из критериев, плюс локальная фильтрация
+
+    @property
+    def key(self) -> str:
+        base = normalize_search_url(self.avito_url)
+        return f"{base}#{criteria_key(self.criteria)}" if self.criteria else base
 
 
 @dataclass
@@ -157,8 +182,12 @@ def read_raw_config() -> dict:
             raw = {}
     merged = {**CONFIG_TEMPLATE, **raw}
     merged["anti_agent"] = {**CONFIG_TEMPLATE["anti_agent"], **(raw.get("anti_agent") or {})}
-    if "targets_to_watch" not in raw:
-        merged["targets_to_watch"] = []
+    targets = []
+    for t in raw.get("targets_to_watch") or []:
+        mode = t.get("mode") or ("url" if t.get("avito_url") else "criteria")
+        targets.append({**t, "mode": mode, "enabled": t.get("enabled", True),
+                        "criteria": normalize_criteria(t.get("criteria"))})
+    merged["targets_to_watch"] = targets
     return merged
 
 
@@ -169,13 +198,19 @@ def write_raw_config(raw: dict) -> None:
 
 
 def parse_config(raw: dict) -> Config:
-    targets = [
-        Target(str(t.get("client_name") or "Без имени"), str(t["avito_url"]).strip())
-        for t in raw.get("targets_to_watch", [])
-        if t.get("avito_url") and t.get("enabled", True)
-    ]
+    targets = []
+    for t in raw.get("targets_to_watch", []):
+        if not t.get("enabled", True):
+            continue
+        name = str(t.get("client_name") or "Без имени")
+        mode = t.get("mode") or ("url" if t.get("avito_url") else "criteria")
+        if mode == "criteria":
+            crit = normalize_criteria(t.get("criteria"))
+            targets.append(Target(name, build_search_url(crit), crit))
+        elif str(t.get("avito_url") or "").strip():
+            targets.append(Target(name, str(t["avito_url"]).strip()))
     if not targets:
-        raise ValueError("Нет ни одной активной ссылки для поиска. Добавьте клиента со ссылкой на Авито.")
+        raise ValueError("Нет ни одного включённого поиска. Добавьте клиента и задайте критерии или ссылку.")
 
     interval = float(raw.get("global_check_interval_seconds", 60))
     if interval < MIN_INTERVAL:
@@ -465,15 +500,21 @@ class Monitor:
     async def process_target(self, target: Target) -> None:
         log.info("🔎 Ищу для «%s»...", target.client_name)
         self.state.update(phase="checking", client=target.client_name, next_check_at=None)
+        if target.criteria:
+            log.info("   Критерии: %s", describe(target.criteria))
         items = await self.avito.search(target.avito_url)
         log.info("   На странице %s объявлений", len(items))
         if not items:
             log.warning("   Объявлений не найдено. Проверьте ссылку или откройте её в браузере (возможна капча).")
+        all_items = items
+        if target.criteria:
+            items = [it for it in items if matches(it, target.criteria)[0]]
+            log.info("   Под критерии подходит %s из %s", len(items), len(all_items))
 
-        key = normalize_search_url(target.avito_url)
+        key = target.key
         first_run = self.history.target_is_new(key)
         if first_run and not self.cfg.notify_on_first_run:
-            for it in items:
+            for it in all_items:
                 self.history.save(it, target.client_name, "baseline")
             self.history.mark_target(key)
             log.info("   Первый запуск для этой ссылки: запомнил %s текущих объявлений, присылать буду только новые.", len(items))

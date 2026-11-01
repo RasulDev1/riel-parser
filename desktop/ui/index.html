@@ -79,14 +79,15 @@
         <div class="stat"><div class="stat-label">Дубли</div><div class="stat-value" id="c-dups">0</div></div>
       </div>
 
-      <div class="flex items-center gap-3 px-8 pb-4 pt-6">
+      <div class="mt-6 flex items-center gap-1 overflow-x-auto border-b border-line px-8" id="client-tabs"></div>
+
+      <div class="flex items-center gap-3 px-8 pb-4 pt-4">
         <div class="seg" id="feed-filter">
           <button data-status="found" class="seg-item active">Подходящие</button>
           <button data-status="agent" class="seg-item">Агенты</button>
           <button data-status="duplicate" class="seg-item">Дубли</button>
           <button data-status="all" class="seg-item">Все</button>
         </div>
-        <select id="feed-client" class="input w-52"><option value="">Все клиенты</option></select>
         <div class="relative ml-auto w-72">
           <svg viewBox="0 0 24 24" class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
           <input id="feed-search" class="input pl-9" placeholder="Поиск по адресу, тексту, клиенту" />
@@ -110,7 +111,7 @@
       <header class="panel-head">
         <div>
           <h1 class="panel-title">Клиенты и поиски</h1>
-          <p class="panel-sub">Настройте фильтры на Авито в браузере, скопируйте ссылку из адресной строки и вставьте сюда</p>
+          <p class="panel-sub">Задайте критерии для каждого клиента. Новые подходящие объекты появятся в ленте во вкладке клиента.</p>
         </div>
         <div class="flex gap-2">
           <button id="add-client" class="btn-secondary">
@@ -226,17 +227,7 @@
 
 <div id="toast" class="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 translate-y-4 rounded-xl px-4 py-2.5 text-sm font-medium text-white opacity-0 shadow-lg transition"></div>
 
-<template id="client-row">
-  <div class="card flex items-start gap-4 !p-4">
-    <input type="checkbox" class="toggle mt-7" data-k="enabled" title="Следить за этой ссылкой" />
-    <label class="field w-56 shrink-0"><span class="field-label">Клиент</span><input class="input" data-k="client_name" placeholder="Иван, 1к до 12 млн" /></label>
-    <label class="field min-w-0 flex-1"><span class="field-label">Ссылка поиска на Авито</span><input class="input font-mono text-[12.5px]" data-k="avito_url" placeholder="https://www.avito.ru/moskva/kvartiry/prodam/..." /></label>
-    <div class="mt-6 flex gap-1">
-      <button class="icon-btn" data-act="open" title="Открыть в браузере"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
-      <button class="icon-btn hover:!bg-red-50 hover:!text-red-600" data-act="del" title="Удалить"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
-    </div>
-  </div>
-</template>
+
 
 <script src="app.js"></script>
 </body>

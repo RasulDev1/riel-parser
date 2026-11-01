@@ -17,6 +17,7 @@ import webbrowser
 from pathlib import Path
 
 import main  # noqa: E402  (ставит httpx/curl_cffi при первом запуске)
+import criteria  # noqa: E402
 from main import (  # noqa: E402
     DB_PATH,
     History,
@@ -159,17 +160,12 @@ class Api:
                     "max_closed_listings": int(aa.get("max_closed_listings") or 0),
                     "skip_if_unknown": bool(aa.get("skip_if_unknown")),
                 },
-                "targets_to_watch": [
-                    {
-                        "client_name": str(t.get("client_name") or "").strip() or "Без имени",
-                        "avito_url": str(t.get("avito_url") or "").strip(),
-                        "enabled": bool(t.get("enabled", True)),
-                    }
-                    for t in raw.get("targets_to_watch") or []
-                    if str(t.get("avito_url") or "").strip()
-                ],
+                "targets_to_watch": [self._clean_target(t) for t in raw.get("targets_to_watch") or []],
             }
-            bad = [t["client_name"] for t in clean["targets_to_watch"] if "avito.ru" not in t["avito_url"]]
+            bad = [
+                t["client_name"] for t in clean["targets_to_watch"]
+                if t["mode"] == "url" and "avito.ru" not in t["avito_url"]
+            ]
             if bad:
                 return {"ok": False, "error": f"Ссылка не похожа на Авито: {', '.join(bad)}"}
             write_raw_config(clean)
@@ -183,6 +179,28 @@ class Api:
             restarted = result.get("ok", False)
         log.info("Настройки сохранены%s.", ", мониторинг перезапущен" if restarted else "")
         return {"ok": True, "restarted": restarted, "config": clean}
+
+    @staticmethod
+    def _clean_target(t: dict) -> dict:
+        mode = t.get("mode") or ("url" if t.get("avito_url") else "criteria")
+        return {
+            "client_name": str(t.get("client_name") or "").strip() or "Без имени",
+            "enabled": bool(t.get("enabled", True)),
+            "mode": "url" if mode == "url" else "criteria",
+            "avito_url": str(t.get("avito_url") or "").strip(),
+            "criteria": criteria.normalize(t.get("criteria")),
+        }
+
+    def get_options(self) -> dict:
+        return {
+            "cities": criteria.CITIES,
+            "categories": criteria.CATEGORIES,
+            "deals": criteria.DEALS,
+            "defaults": criteria.DEFAULT_CRITERIA,
+        }
+
+    def build_url(self, crit: dict) -> str:
+        return criteria.build_search_url(crit or {})
 
     # --- мониторинг ----------------------------------------------------------
 
@@ -251,6 +269,9 @@ class Api:
             "SELECT status, COUNT(*), SUM(created_at >= ?) FROM listings GROUP BY status", (midnight,)
         )
         by = {s: (total, today or 0) for s, total, today in rows}
+        per_client = dict(self._query(
+            "SELECT client_name, COUNT(*) FROM listings WHERE status IN ('sent', 'dry_run') GROUP BY client_name"
+        ))
         found = ("sent", "dry_run")
         return {
             "found_today": sum(by.get(s, (0, 0))[1] for s in found),
@@ -258,6 +279,7 @@ class Api:
             "agents": by.get("agent", (0, 0))[0],
             "duplicates": by.get("duplicate", (0, 0))[0],
             "baseline": by.get("baseline", (0, 0))[0],
+            "by_client": per_client,
         }
 
     def listings(self, status: str = "found", query: str = "", limit: int = 300) -> list[dict]:

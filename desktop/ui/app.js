@@ -13,6 +13,9 @@ let feedStatus = "found";
 let lastFeedKey = "";
 let knownIds = new Set();
 let firstFeedLoad = true;
+let feedClient = "";
+let options = null;
+const expanded = new Set();
 
 // ---------------------------------------------------------------- навигация
 
@@ -69,7 +72,7 @@ const STATUS = {
 
 async function loadFeed() {
   const query = $("#feed-search").value.trim();
-  const client = $("#feed-client").value;
+  const client = feedClient;
   let items = await api.listings(feedStatus, query, 300);
   if (client) items = items.filter((i) => i.client === client);
 
@@ -138,50 +141,231 @@ $("#feed-search").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadFeed, 200);
 });
-$("#feed-client").addEventListener("change", loadFeed);
-
 function fillClientFilter() {
-  const sel = $("#feed-client");
-  const cur = sel.value;
-  const names = [...new Set((config?.targets_to_watch || []).map((t) => t.client_name))];
-  sel.innerHTML = `<option value="">Все клиенты</option>` + names.map((n) => `<option>${esc(n)}</option>`).join("");
-  if (names.includes(cur)) sel.value = cur;
+  const names = [...new Set((config?.targets_to_watch || []).map((t) => t.client_name).filter(Boolean))];
+  if (feedClient && !names.includes(feedClient)) feedClient = "";
+  const counts = status?.counts?.by_client || {};
+  const total = status?.counts?.found_total ?? 0;
+  const tab = (value, label, n) => `
+    <button data-client="${esc(value)}" class="relative -mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition
+      ${feedClient === value ? "border-brand text-ink" : "border-transparent text-muted hover:text-ink"}">
+      ${esc(label)}${n ? `<span class="rounded-full bg-canvas px-1.5 text-[11px] tabular-nums text-muted">${n}</span>` : ""}
+    </button>`;
+  const html = tab("", "Все клиенты", total) + names.map((n) => tab(n, n, counts[n] || 0)).join("");
+  const box = $("#client-tabs");
+  if (box.dataset.html !== html) {
+    box.innerHTML = html;
+    box.dataset.html = html;
+  }
 }
+$("#client-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-client]");
+  if (!b) return;
+  feedClient = b.dataset.client;
+  fillClientFilter();
+  loadFeed();
+});
 
 // ---------------------------------------------------------------- клиенты
 
-function renderClients() {
-  const list = $("#clients-list");
-  list.innerHTML = "";
-  const targets = config.targets_to_watch;
-  $("#clients-empty").classList.toggle("hidden", targets.length > 0);
-  targets.forEach((t, idx) => {
-    const row = $("#client-row").content.firstElementChild.cloneNode(true);
-    $("[data-k=enabled]", row).checked = t.enabled !== false;
-    $("[data-k=client_name]", row).value = t.client_name || "";
-    $("[data-k=avito_url]", row).value = t.avito_url || "";
-    row.addEventListener("input", (e) => {
-      const k = e.target.dataset.k;
-      if (!k) return;
-      t[k] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
-      markDirty();
-    });
-    $("[data-act=del]", row).addEventListener("click", () => {
-      targets.splice(idx, 1);
-      renderClients();
-      markDirty();
-    });
-    $("[data-act=open]", row).addEventListener("click", () => {
-      const url = $("[data-k=avito_url]", row).value.trim();
-      api.open_url(url.startsWith("http") ? url : "https://www.avito.ru/");
-    });
-    list.appendChild(row);
+const num = (v) => (v === null || v === undefined ? "" : v);
+const ROOMS = [["studio", "Студия"], ["1", "1"], ["2", "2"], ["3", "3"], ["4+", "4+"]];
+
+function optionList(list, value) {
+  return list.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("");
+}
+
+function summary(t) {
+  if (t.mode === "url") return t.avito_url ? "Своя ссылка с Авито" : "Ссылка не указана";
+  const c = t.criteria;
+  const city = (options.cities.find(([v]) => v === c.city) || [, c.city])[1];
+  const cat = (options.categories.find(([v]) => v === c.category) || [, ""])[1];
+  const deal = (options.deals.find(([v]) => v === c.deal) || [, ""])[1];
+  const parts = [city, cat, deal];
+  if (c.rooms?.length && c.category === "kvartiry") parts.push(c.rooms.map((r) => (r === "studio" ? "студия" : r)).join(", ") + " комн.");
+  const money = (n) => (n >= 1e6 ? +(n / 1e6).toFixed(2) + " млн" : Number(n).toLocaleString("ru-RU"));
+  if (c.price_min || c.price_max) parts.push([c.price_min && "от " + money(c.price_min), c.price_max && "до " + money(c.price_max)].filter(Boolean).join(" ") + " ₽");
+  if (c.area_min || c.area_max) parts.push([c.area_min && "от " + c.area_min, c.area_max && "до " + c.area_max].filter(Boolean).join(" ") + " м²");
+  if (c.floor_min || c.floor_max) parts.push("этаж " + [c.floor_min && "от " + c.floor_min, c.floor_max && "до " + c.floor_max].filter(Boolean).join(" "));
+  if (c.districts) parts.push(c.districts);
+  if (c.private_only) parts.push("только частные");
+  return parts.join(" · ");
+}
+
+function rangeField(label, key, unit = "") {
+  return `<label class="field"><span class="field-label">${label}${unit ? ", " + unit : ""}</span>
+    <div class="flex gap-2">
+      <input class="input" inputmode="numeric" placeholder="от" data-c="${key}_min" />
+      <input class="input" inputmode="numeric" placeholder="до" data-c="${key}_max" />
+    </div></label>`;
+}
+
+function clientCard(t, idx) {
+  const open = expanded.has(idx);
+  const c = t.criteria;
+  const knownCity = options.cities.some(([v]) => v === c.city);
+  return `
+  <div class="card !p-0 ${t.enabled === false ? "opacity-60" : ""}" data-idx="${idx}">
+    <div class="flex items-center gap-4 px-5 py-4">
+      <input type="checkbox" class="toggle" data-k="enabled" ${t.enabled !== false ? "checked" : ""} title="Следить за этим поиском" />
+      <div class="min-w-0 flex-1 cursor-pointer" data-act="toggle">
+        <div class="truncate text-[15px] font-semibold">${esc(t.client_name || "Новый клиент")}</div>
+        <div class="truncate text-sm text-muted">${esc(summary(t))}</div>
+      </div>
+      <button class="btn-secondary !py-1.5" data-act="toggle">${open ? "Свернуть" : "Изменить"}</button>
+      <button class="icon-btn" data-act="open" title="Открыть поиск на Авито"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
+      <button class="icon-btn hover:!bg-red-50 hover:!text-red-600" data-act="del" title="Удалить"><svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+    </div>
+    ${open ? `
+    <div class="grid gap-5 border-t border-line px-5 py-5">
+      <div class="flex flex-wrap items-end gap-4">
+        <label class="field w-72"><span class="field-label">Клиент</span><input class="input" data-k="client_name" placeholder="Иван, 1к до 12 млн" /></label>
+        <div class="field"><span class="field-label">Как искать</span>
+          <div class="seg">
+            <button data-mode="criteria" class="seg-item ${t.mode !== "url" ? "active" : ""}">По критериям</button>
+            <button data-mode="url" class="seg-item ${t.mode === "url" ? "active" : ""}">Своя ссылка</button>
+          </div>
+        </div>
+      </div>
+      ${t.mode === "url" ? `
+      <label class="field"><span class="field-label">Ссылка поиска на Авито</span>
+        <input class="input font-mono text-[12.5px]" data-k="avito_url" placeholder="https://www.avito.ru/moskva/kvartiry/prodam/..." />
+        <span class="field-hint">Настройте фильтры на сайте Авито и скопируйте адрес страницы со списком объявлений.</span></label>` : `
+      <div class="grid grid-cols-4 gap-4">
+        <label class="field"><span class="field-label">Город</span>
+          <select class="input" data-c="city_select">${optionList(options.cities, knownCity ? c.city : "__other")}<option value="__other" ${knownCity ? "" : "selected"}>Другой…</option></select></label>
+        <label class="field ${knownCity ? "hidden" : ""}" data-other-city><span class="field-label">Город как в адресе Авито</span>
+          <input class="input font-mono text-[13px]" data-c="city" placeholder="например, kaspiysk" /></label>
+        <label class="field"><span class="field-label">Что ищем</span><select class="input" data-c="category">${optionList(options.categories, c.category)}</select></label>
+        <label class="field"><span class="field-label">Сделка</span><select class="input" data-c="deal">${optionList(options.deals, c.deal)}</select></label>
+      </div>
+      ${c.category === "kvartiry" ? `
+      <div class="field"><span class="field-label">Комнаты</span>
+        <div class="flex gap-2">${ROOMS.map(([v, l]) => `<button data-room="${v}" class="rounded-xl border px-4 py-2 text-sm font-medium transition ${c.rooms.includes(v) ? "border-brand bg-brand-50 text-brand" : "border-line bg-white text-muted hover:text-ink"}">${l}</button>`).join("")}
+        <span class="self-center text-xs text-muted">${c.rooms.length ? "" : "любое количество"}</span></div></div>` : ""}
+      <div class="grid grid-cols-4 gap-4">
+        ${rangeField("Цена", "price", "₽")}
+        ${rangeField("Площадь", "area", "м²")}
+        ${rangeField("Этаж", "floor")}
+        ${rangeField("Этажей в доме", "floors_total")}
+      </div>
+      <div class="flex flex-wrap gap-6">
+        <label class="toggle-row"><input type="checkbox" class="toggle" data-c="not_first_floor" /><span class="pt-0.5">Не первый этаж</span></label>
+        <label class="toggle-row"><input type="checkbox" class="toggle" data-c="not_last_floor" /><span class="pt-0.5">Не последний этаж</span></label>
+        <label class="toggle-row"><input type="checkbox" class="toggle" data-c="private_only" /><span class="pt-0.5">Только частные лица на Авито</span></label>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <label class="field"><span class="field-label">Район, метро или улица</span>
+          <input class="input" data-c="districts" placeholder="Хамовники, Фрунзенская, Пироговская" />
+          <span class="field-hint">Через запятую. Подойдёт объявление, где в адресе есть любое из слов. Пусто — весь город.</span></label>
+        <label class="field"><span class="field-label">Исключить, если в тексте есть</span>
+          <input class="input" data-c="exclude_words" placeholder="доля, аукцион, апартаменты" />
+          <span class="field-hint">Через запятую. Проверяются заголовок, адрес и описание.</span></label>
+      </div>`}
+    </div>` : ""}
+  </div>`;
+}
+
+function fillCard(card, t) {
+  $$("[data-k]", card).forEach((el) => {
+    if (el.type === "checkbox") return;
+    el.value = t[el.dataset.k] ?? "";
+  });
+  $$("[data-c]", card).forEach((el) => {
+    const k = el.dataset.c;
+    if (k === "city_select" || k === "category" || k === "deal") return;
+    if (el.type === "checkbox") el.checked = !!t.criteria[k];
+    else el.value = num(t.criteria[k]);
   });
 }
 
+function renderClients() {
+  const list = $("#clients-list");
+  const targets = config.targets_to_watch;
+  $("#clients-empty").classList.toggle("hidden", targets.length > 0);
+  list.innerHTML = targets.map(clientCard).join("");
+  $$("[data-idx]", list).forEach((card) => fillCard(card, targets[+card.dataset.idx]));
+}
+
+$("#clients-list").addEventListener("input", (e) => {
+  const card = e.target.closest("[data-idx]");
+  if (!card) return;
+  const t = config.targets_to_watch[+card.dataset.idx];
+  const el = e.target;
+  if (el.dataset.k) {
+    t[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value;
+    if (el.dataset.k === "enabled") card.classList.toggle("opacity-60", !el.checked);
+    if (el.dataset.k === "client_name") $(".text-\\[15px\\]", card).textContent = el.value || "Новый клиент";
+  } else if (el.dataset.c) {
+    const k = el.dataset.c;
+    if (k === "city_select") {
+      const other = el.value === "__other";
+      $("[data-other-city]", card).classList.toggle("hidden", !other);
+      t.criteria.city = other ? "" : el.value;
+      if (other) $("[data-c=city]", card).focus();
+    } else if (el.type === "checkbox") t.criteria[k] = el.checked;
+    else if (/_(min|max)$/.test(k)) {
+      el.value = el.value.replace(/[^\d.,]/g, "");
+      t.criteria[k] = el.value === "" ? null : Number(el.value.replace(",", "."));
+    } else t.criteria[k] = el.value;
+    if (k === "category") return rerenderCard(card);
+  }
+  const sum = $(".text-sm.text-muted.truncate", card);
+  if (sum) sum.textContent = summary(t);
+  markDirty();
+});
+
+function rerenderCard(card) {
+  const idx = +card.dataset.idx;
+  const fresh = document.createElement("div");
+  fresh.innerHTML = clientCard(config.targets_to_watch[idx], idx);
+  const el = fresh.firstElementChild;
+  card.replaceWith(el);
+  fillCard(el, config.targets_to_watch[idx]);
+  markDirty();
+}
+
+$("#clients-list").addEventListener("click", async (e) => {
+  const card = e.target.closest("[data-idx]");
+  if (!card) return;
+  const idx = +card.dataset.idx;
+  const t = config.targets_to_watch[idx];
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  const mode = e.target.closest("[data-mode]")?.dataset.mode;
+  const room = e.target.closest("[data-room]")?.dataset.room;
+  if (act === "toggle") {
+    expanded.has(idx) ? expanded.delete(idx) : expanded.add(idx);
+    rerenderCard(card);
+  } else if (act === "del") {
+    if (!confirm(`Удалить поиск «${t.client_name || "без имени"}»?`)) return;
+    config.targets_to_watch.splice(idx, 1);
+    expanded.clear();
+    renderClients();
+    markDirty();
+  } else if (act === "open") {
+    const url = t.mode === "url" ? t.avito_url : await api.build_url(t.criteria);
+    api.open_url(url && url.startsWith("http") ? url : "https://www.avito.ru/");
+  } else if (mode) {
+    t.mode = mode;
+    rerenderCard(card);
+  } else if (room) {
+    const set = new Set(t.criteria.rooms);
+    set.has(room) ? set.delete(room) : set.add(room);
+    t.criteria.rooms = ROOMS.map(([v]) => v).filter((v) => set.has(v));
+    rerenderCard(card);
+  }
+});
+
 $("#add-client").addEventListener("click", () => {
-  config.targets_to_watch.push({ client_name: "", avito_url: "", enabled: true });
+  const last = config.targets_to_watch.at(-1);
+  const city = last?.criteria?.city || options.defaults.city;
+  config.targets_to_watch.push({
+    client_name: "", avito_url: "", enabled: true, mode: "criteria",
+    criteria: { ...structuredClone(options.defaults), city },
+  });
+  expanded.add(config.targets_to_watch.length - 1);
   renderClients();
+  markDirty();
   const rows = $$("#clients-list [data-k=client_name]");
   rows[rows.length - 1]?.focus();
 });
@@ -291,6 +475,7 @@ let status = null;
 async function refreshStatus() {
   status = await api.status();
   renderStatus();
+  fillClientFilter();
   const c = status.counts;
   $("#c-today").textContent = c.found_today;
   $("#c-total").textContent = c.found_total;
@@ -370,6 +555,7 @@ $("#log-clear").addEventListener("click", () => ($("#log-box").innerHTML = ""));
 
 async function init() {
   api = window.pywebview.api;
+  options = await api.get_options();
   config = await api.get_config();
   config.targets_to_watch ??= [];
   renderClients();

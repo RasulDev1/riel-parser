@@ -14,11 +14,26 @@
   "targets_to_watch": [
     {
       "client_name": "Иван 1к",
-      "avito_url": "https://www.avito.ru/moskva/kvartiry/prodam/1-komnatnye-ASgBAgICAkSSA8YQygiAWQ?pmax=12000000"
+      "enabled": true,
+      "mode": "criteria",
+      "criteria": {
+        "city": "moskva",
+        "category": "kvartiry",
+        "deal": "prodam",
+        "rooms": [
+          "1"
+        ],
+        "price_max": 12000000,
+        "area_min": 30,
+        "not_first_floor": true,
+        "private_only": true
+      }
     },
     {
-      "client_name": "Мария 2к",
-      "avito_url": "https://www.avito.ru/kazan/kvartiry/prodam/2-komnatnye-ASgBAgICAkSSA8YQygiCWQ?pmax=9000000"
+      "client_name": "Мария (своя ссылка)",
+      "enabled": false,
+      "mode": "url",
+      "avito_url": "https://www.avito.ru/moskva/kvartiry/prodam/2-komnatnye-ASgBAgICAkSSA8YQygiCWQ?pmax=25000000"
     }
   ]
 }
