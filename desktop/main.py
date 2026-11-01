@@ -78,6 +78,7 @@ CONFIG_TEMPLATE = {
     "jitter_seconds": 3,
     "notify_on_first_run": False,
     "avito_cookies": "",
+    "browser_mode": True,
     "anti_agent": {
         "enabled": True,
         "max_active_listings": 1,
@@ -146,6 +147,7 @@ class Config:
     notify_on_first_run: bool
     anti_agent: AntiAgent
     avito_cookies: str = ""
+    browser_mode: bool = True
     targets: list[Target] = field(default_factory=list)
 
 
@@ -232,6 +234,7 @@ def parse_config(raw: dict) -> Config:
         ),
         targets=targets,
         avito_cookies=str(raw.get("avito_cookies") or ""),
+        browser_mode=bool(raw.get("browser_mode", True)),
     )
 
 
@@ -429,10 +432,10 @@ def format_message(client: str, item: Listing, seller: SellerInfo | None) -> str
 
 
 class Monitor:
-    def __init__(self, cfg: Config, dry_run: bool = False):
+    def __init__(self, cfg: Config, dry_run: bool = False, page_loader=None):
         self.cfg = cfg
         self.history = History(DB_PATH)
-        self.avito = AvitoClient(cookies=cfg.avito_cookies)
+        self.avito = AvitoClient(cookies=cfg.avito_cookies, page_loader=page_loader)
         self.once = False
         self.tg = Telegram(cfg.token, cfg.chat_id, dry_run=dry_run)
         self.dry_run = dry_run

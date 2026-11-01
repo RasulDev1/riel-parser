@@ -379,6 +379,7 @@ const bind = [
   ["#s-jitter", "jitter_seconds", Number],
   ["#s-first", "notify_on_first_run", "check"],
   ["#s-cookies", "avito_cookies"],
+  ["#s-browser", "browser_mode", "check"],
   ["#s-aa", "anti_agent.enabled", "check"],
   ["#s-aa-active", "anti_agent.max_active_listings", Number],
   ["#s-aa-closed", "anti_agent.max_closed_listings", Number],
@@ -414,6 +415,11 @@ for (const [sel, path, kind] of bind) {
     markDirty();
   });
 }
+
+$("#show-browser").addEventListener("click", async () => {
+  const r = await api.show_browser();
+  if (!r.ok) toast(r.error, "err");
+});
 
 $("#test-tg").addEventListener("click", async () => {
   const out = $("#test-tg-result");
@@ -501,7 +507,7 @@ function renderStatus() {
   btn.dataset.running = running ? "1" : "0";
   $("#toggle-label").textContent = running ? "Остановить" : "Запустить";
   btn.classList.toggle("danger", running);
-  dot.className = "relative flex size-2.5 " + (running ? (status.phase === "blocked" ? "warn" : "on") : "");
+  dot.className = "relative flex size-2.5 " + (running ? (["blocked", "captcha"].includes(status.phase) ? "warn" : "on") : "");
 
   let title = "Остановлено";
   let sub = "Нажмите «Запустить», чтобы начать следить за новыми объявлениями.";
@@ -510,6 +516,9 @@ function renderStatus() {
     if (status.phase === "checking") {
       title = "Проверяю";
       sub = `Ищу новые объекты для «${status.client || "…"}»`;
+    } else if (status.phase === "captcha") {
+      title = "Нужна проверка Авито";
+      sub = "Пройдите проверку «я не робот» в открывшемся окне Авито, и поиск продолжится сам.";
     } else if (status.phase === "blocked") {
       title = "Пауза: Авито ограничил доступ";
       sub = left != null ? `Продолжу через ${fmtCountdown(left)}. Откройте Авито в браузере и пройдите капчу.` : "";

@@ -66,6 +66,84 @@ class UiLogHandler(logging.Handler):
 
 
 # ----------------------------------------------------------------------------
+# Встроенный браузер для загрузки Авито
+# ----------------------------------------------------------------------------
+
+
+class BrowserLoader:
+    """
+    Открывает страницы Авито в скрытом окне встроенного браузера (Edge WebView2).
+    Для Авито это обычный посетитель: настоящий браузер, свои куки, ваш IP.
+    Если Авито просит пройти проверку, окно показывается, вы проходите её руками,
+    и мониторинг продолжается сам.
+    """
+
+    CAPTCHA_WAIT = 10 * 60
+
+    def __init__(self) -> None:
+        self.window = None
+        self._lock = threading.Lock()
+        self._loaded = threading.Event()
+        self.cancel = threading.Event()
+        self.captcha = False
+
+    def attach(self, window) -> None:
+        self.window = window
+        window.events.loaded += self._loaded.set
+
+    def _html(self) -> str:
+        return self.window.evaluate_js("document.documentElement.outerHTML") or ""
+
+    def _load(self, url: str) -> str:
+        self._loaded.clear()
+        self.window.load_url(url)
+        if not self._loaded.wait(40):
+            raise RuntimeError("страница Авито не загрузилась за 40 с")
+        # даём странице дорисоваться
+        for _ in range(20):
+            if self.window.evaluate_js("document.readyState") == "complete":
+                break
+            time.sleep(0.5)
+        time.sleep(1.0)
+        return self._html()
+
+    def __call__(self, url: str) -> str:
+        from avito_client import AvitoBlocked, is_block_page
+
+        if self.window is None:
+            raise RuntimeError("встроенный браузер не готов")
+        with self._lock:
+            html = self._load(url)
+            if not is_block_page(html):
+                return html
+
+            log.warning("🧩 Авито просит подтвердить, что вы не робот. Пройдите проверку в открывшемся окне.")
+            self.captcha = True
+            self.window.show()
+            try:
+                deadline = time.time() + self.CAPTCHA_WAIT
+                while time.time() < deadline and not self.cancel.is_set():
+                    time.sleep(3)
+                    try:
+                        if not is_block_page(self._html()):
+                            break
+                    except Exception:
+                        pass
+                else:
+                    if self.cancel.is_set():
+                        raise AvitoBlocked("мониторинг остановлен во время проверки")
+                    raise AvitoBlocked("проверку Авито не прошли за 10 минут")
+            finally:
+                self.captcha = False
+                try:
+                    self.window.hide()
+                except Exception:
+                    pass
+            log.info("✅ Проверка пройдена, продолжаю.")
+            return self._load(url)
+
+
+# ----------------------------------------------------------------------------
 # Фоновый мониторинг
 # ----------------------------------------------------------------------------
 
@@ -73,7 +151,8 @@ class UiLogHandler(logging.Handler):
 class Runner:
     """Крутит Monitor в отдельном потоке со своим asyncio-циклом."""
 
-    def __init__(self) -> None:
+    def __init__(self, browser: BrowserLoader | None = None) -> None:
+        self.browser = browser
         self.thread: threading.Thread | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.monitor: Monitor | None = None
@@ -88,13 +167,16 @@ class Runner:
             return
         dry_run = not (cfg.token and cfg.chat_id)
         ready = threading.Event()
+        use_browser = self.browser is not None and self.browser.window is not None and cfg.browser_mode
+        if self.browser:
+            self.browser.cancel.clear()
 
         def target() -> None:
             if sys.platform == "win32":
                 asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            self.monitor = Monitor(cfg, dry_run=dry_run)
+            self.monitor = Monitor(cfg, dry_run=dry_run, page_loader=self.browser if use_browser else None)
             ready.set()
             try:
                 self.loop.run_until_complete(self.monitor.run_forever())
@@ -111,10 +193,13 @@ class Runner:
         self.thread.start()
         ready.wait(5)
         self.started_at = time.time()
+        log.info("Загрузка страниц: %s", "встроенный браузер" if use_browser else "прямые запросы (curl_cffi)")
         if dry_run:
             log.warning("Telegram не настроен: новые объекты будут только в ленте приложения.")
 
     def stop(self, wait: float = 5) -> None:
+        if self.browser:
+            self.browser.cancel.set()
         if self.running and self.loop and self.monitor:
             self.loop.call_soon_threadsafe(self.monitor.stop)
             self.thread.join(wait)
@@ -122,7 +207,10 @@ class Runner:
 
     def state(self) -> dict:
         if self.running and self.monitor:
-            return {**self.monitor.state, "dry_run": self.monitor.dry_run}
+            st = {**self.monitor.state, "dry_run": self.monitor.dry_run}
+            if self.browser and self.browser.captcha:
+                st["phase"] = "captcha"
+            return st
         return {"phase": "idle", "client": None, "next_check_at": None, "last_error": None, "dry_run": False}
 
 
@@ -132,9 +220,10 @@ class Runner:
 
 
 class Api:
-    def __init__(self, log_handler: UiLogHandler) -> None:
+    def __init__(self, log_handler: UiLogHandler, browser: BrowserLoader | None = None) -> None:
         self._logs = log_handler
-        self._runner = Runner()
+        self._browser = browser
+        self._runner = Runner(browser)
         self._db_lock = threading.Lock()
         self._history = History(DB_PATH)
         self._history.db.close()  # таблицы созданы; дальше читаем отдельными подключениями
@@ -154,6 +243,7 @@ class Api:
                 "jitter_seconds": max(0.0, float(raw.get("jitter_seconds") or 0)),
                 "notify_on_first_run": bool(raw.get("notify_on_first_run")),
                 "avito_cookies": str(raw.get("avito_cookies") or "").strip(),
+                "browser_mode": bool(raw.get("browser_mode", True)),
                 "anti_agent": {
                     "enabled": bool(aa.get("enabled", True)),
                     "max_active_listings": int(aa.get("max_active_listings") or 0),
@@ -323,6 +413,15 @@ class Api:
                 con.close()
         return {"ok": True}
 
+    def show_browser(self) -> dict:
+        """Открыть окно встроенного браузера, например чтобы зайти на Авито или пройти проверку."""
+        if not self._browser or not self._browser.window:
+            return {"ok": False, "error": "Встроенный браузер недоступен"}
+        if not self._browser.captcha:
+            threading.Thread(target=lambda: self._browser.window.load_url("https://www.avito.ru/"), daemon=True).start()
+        self._browser.window.show()
+        return {"ok": True}
+
     def shutdown(self) -> None:
         self._runner.stop(wait=3)
 
@@ -340,7 +439,27 @@ def run() -> None:
     main.setup_logging(verbose=False)
     logging.getLogger().addHandler(handler)
 
-    api = Api(handler)
+    browser = BrowserLoader()
+    api = Api(handler, browser)
+    avito_window = webview.create_window(
+        "Авито — встроенный браузер Riel Parser",
+        url="about:blank",
+        hidden=True,
+        width=1100,
+        height=800,
+    )
+    browser.attach(avito_window)
+    quitting = {"v": False}
+
+    def on_avito_closing():
+        # Крестик просто прячет окно: оно нужно для работы мониторинга
+        if quitting["v"]:
+            return True
+        avito_window.hide()
+        return False
+
+    avito_window.events.closing += on_avito_closing
+
     window = webview.create_window(
         "Riel Parser — новые объекты Авито",
         url=str(UI_DIR / "index.html"),
@@ -350,9 +469,23 @@ def run() -> None:
         min_size=(980, 640),
         background_color="#F6F7F9",
     )
-    window.events.closing += lambda: api.shutdown()
+
+    def on_main_closing():
+        quitting["v"] = True
+        api.shutdown()
+        try:
+            avito_window.destroy()
+        except Exception:
+            pass
+
+    window.events.closing += on_main_closing
     log.info("Приложение запущено. Данные: %s", main.BASE_DIR)
-    webview.start(debug="--debug" in sys.argv)
+    # Постоянный профиль браузера: куки Авито и пройденная капча сохраняются между запусками
+    webview.start(
+        debug="--debug" in sys.argv,
+        private_mode=False,
+        storage_path=str(main.BASE_DIR / "browser_profile"),
+    )
 
 
 if __name__ == "__main__":

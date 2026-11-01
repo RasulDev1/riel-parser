@@ -193,7 +193,16 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><div><div class="card-title">Куки Авито</div><div class="card-sub">Нужны, только если Авито начал блокировать (ошибки 429/439).</div></div></div>
+            <div class="card-head">
+              <div><div class="card-title">Встроенный браузер</div><div class="card-sub">Страницы Авито открываются в скрытом окне браузера Edge, как у обычного посетителя. Так Авито реже блокирует. Если он попросит пройти проверку, окно откроется само: пройдите её, и мониторинг продолжится.</div></div>
+              <input id="s-browser" type="checkbox" class="toggle" />
+            </div>
+            <button id="show-browser" class="btn-secondary">Открыть Авито во встроенном браузере</button>
+            <span class="ml-3 text-xs text-muted">Можно заранее зайти на Авито и пройти проверку. Куки сохранятся.</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">Куки Авито</div><div class="card-sub">Только для режима без встроенного браузера, если Авито блокирует (ошибки 429/439).</div></div></div>
             <textarea id="s-cookies" rows="3" class="input font-mono text-xs" placeholder="Необязательно. Вставьте строку Cookie из браузера"></textarea>
             <details class="mt-3 text-sm text-muted">
               <summary class="cursor-pointer select-none font-medium text-ink">Как получить куки</summary>

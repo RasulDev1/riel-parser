@@ -18,7 +18,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 log = logging.getLogger("avito")
@@ -103,9 +103,25 @@ def absolute(url_path: str | None) -> str | None:
 # ----------------------------------------------------------------------------
 
 _BLOCK_MARKERS = re.compile(
-    r"Доступ ограничен|проблема с IP|firewall-container|captcha|Вы робот",
+    r"Доступ ограничен|проблема с IP|firewall-container|firewall-title|Вы робот|не робот",
     re.IGNORECASE,
 )
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def is_block_page(page: str) -> bool:
+    """
+    Страница-заглушка Авито («Доступ ограничен», капча). Смотрим только заголовок
+    и характерные блоки: слово captcha встречается и в скриптах обычных страниц,
+    поэтому по нему одному страницу блокировкой не считаем.
+    """
+    if not page:
+        return False
+    title_m = _TITLE_RE.search(page[:50000])
+    title = title_m.group(1) if title_m else ""
+    if re.search(r"Доступ ограничен|не робот|Вы робот|captcha|Проверка", title, re.IGNORECASE):
+        return True
+    return bool(re.search(r"firewall-container|firewall-title|js-firewall", page[:200000]))
 
 
 # 429 — слишком много запросов, 439/403 — Авито так отвечает на подозрение в боте
@@ -113,8 +129,11 @@ BLOCK_STATUSES = {401, 403, 429, 439}
 
 
 class AvitoClient:
-    def __init__(self, timeout: float = 25.0, cookies: str = ""):
+    def __init__(self, timeout: float = 25.0, cookies: str = "", page_loader: Callable[[str], str] | None = None):
         self._timeout = timeout
+        # Загрузчик через встроенный браузер приложения (WebView2). Если задан, страницы
+        # открываются как у обычного посетителя: со своими куками, JS и возможностью пройти капчу.
+        self._page_loader = page_loader
         # Куки из своего браузера (строка заголовка Cookie). Помогают, если Авито
         # уже показал капчу: проходите её в браузере и вставляете куки в config.json
         self._cookies = cookies.strip()
@@ -139,6 +158,11 @@ class AvitoClient:
         await self._session.close() if HAS_CURL_CFFI else await self._session.aclose()
 
     async def _get(self, url: str, referer: str | None = None) -> str:
+        if self._page_loader is not None:
+            text = await asyncio.to_thread(self._page_loader, url)
+            if is_block_page(text):
+                raise AvitoBlocked("капча в браузере")
+            return text
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -153,7 +177,7 @@ class AvitoClient:
             resp = await self._session.get(url, headers=headers)
         status = resp.status_code
         text = resp.text
-        if status in BLOCK_STATUSES or (400 <= status < 500 and _BLOCK_MARKERS.search(text[:20000])) or (status == 200 and _BLOCK_MARKERS.search(text[:20000]) and "data-marker=\"item\"" not in text):
+        if status in BLOCK_STATUSES or (status >= 400 and _BLOCK_MARKERS.search(text[:20000])) or is_block_page(text):
             raise AvitoBlocked(f"HTTP {status}")
         if status >= 400:
             raise RuntimeError(f"Авито ответил HTTP {status} на {url}")
@@ -161,7 +185,7 @@ class AvitoClient:
 
     async def _warm_up(self) -> None:
         """Заходим на главную, чтобы получить куки, как обычный посетитель."""
-        if self._warmed_up:
+        if self._warmed_up or self._page_loader is not None:
             return
         try:
             await self._get(AVITO + "/")
