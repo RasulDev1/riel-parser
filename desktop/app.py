@@ -431,19 +431,92 @@ class Api:
 # ----------------------------------------------------------------------------
 
 
-def run() -> None:
-    main.ensure_dependencies({"webview": "pywebview>=5"})
-    import webview  # type: ignore
+def serve_in_browser(api: "Api") -> None:
+    """
+    Запасной режим: интерфейс открывается в обычном браузере по адресу http://127.0.0.1:<порт>.
+    Работает без pywebview. Встроенный браузер для Авито в этом режиме недоступен.
+    """
+    import json
+    import secrets
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+    token = secrets.token_urlsafe(16)
+    bridge = (
+        "<script>window.pywebview={api:new Proxy({},{get:(_,m)=>(...a)=>fetch('/api/'+m,"
+        "{method:'POST',headers:{'X-Token':'%s','Content-Type':'application/json'},body:JSON.stringify(a)})"
+        ".then(r=>r.json())})};</script>" % token
+    ).encode()
+    allowed = {name for name in dir(api) if not name.startswith("_")}
+
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=str(UI_DIR), **k)
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                body = (UI_DIR / "index.html").read_bytes().replace(b'<script src="app.js">', bridge + b'<script src="app.js">')
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
+        def do_POST(self):
+            name = self.path.rsplit("/", 1)[-1]
+            if self.headers.get("X-Token") != token or name not in allowed:
+                self.send_error(403)
+                return
+            try:
+                args = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"[]")
+                result = getattr(api, name)(*args)
+                body = json.dumps(result, ensure_ascii=False).encode()
+            except Exception as e:
+                log.exception("Ошибка в %s", name)
+                body = json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    log.info("Интерфейс открыт в браузере: %s", url)
+    print(f"\nИнтерфейс Riel Parser открыт в браузере: {url}\nНе закрывайте это окно, пока работаете. Выход: Ctrl+C или закройте окно.\n", flush=True)
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        api.shutdown()
+
+
+def run() -> None:
     handler = UiLogHandler()
     main.setup_logging(verbose=False)
     logging.getLogger().addHandler(handler)
+
+    if "--browser" in sys.argv:
+        serve_in_browser(Api(handler))
+        return
+
+    try:
+        main.ensure_dependencies({"webview": "pywebview>=5"})
+        import webview  # type: ignore
+    except (Exception, SystemExit) as e:
+        log.warning("Окно приложения недоступно (%s), открываю интерфейс в браузере.", e)
+        serve_in_browser(Api(handler))
+        return
 
     browser = BrowserLoader()
     api = Api(handler, browser)
     avito_window = webview.create_window(
         "Авито — встроенный браузер Riel Parser",
-        url="about:blank",
+        html="<!doctype html><meta charset='utf-8'><title>Авито</title>",
         hidden=True,
         width=1100,
         height=800,
@@ -480,12 +553,25 @@ def run() -> None:
 
     window.events.closing += on_main_closing
     log.info("Приложение запущено. Данные: %s", main.BASE_DIR)
-    # Постоянный профиль браузера: куки Авито и пройденная капча сохраняются между запусками
-    webview.start(
-        debug="--debug" in sys.argv,
-        private_mode=False,
-        storage_path=str(main.BASE_DIR / "browser_profile"),
-    )
+    try:
+        # Постоянный профиль браузера: куки Авито и пройденная капча сохраняются между запусками
+        webview.start(
+            debug="--debug" in sys.argv,
+            private_mode=False,
+            storage_path=str(main.BASE_DIR / "browser_profile"),
+        )
+    except Exception as e:
+        log.exception("Не удалось открыть окно приложения: %s", e)
+        print(
+            "\nОкно приложения не открылось (подробности в parser.log). "
+            "Открываю интерфейс в обычном браузере.\n"
+            "Чтобы окно работало, установите Microsoft Edge WebView2 Runtime: "
+            "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n",
+            flush=True,
+        )
+        browser.window = None  # встроенный браузер недоступен, Авито грузится прямыми запросами
+        api._runner.browser = None
+        serve_in_browser(api)
 
 
 if __name__ == "__main__":
